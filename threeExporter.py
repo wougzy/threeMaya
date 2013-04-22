@@ -1,4 +1,4 @@
-from pymel.core import *
+import pymel.core as pymel
 import json
 
 FACE_QUAD          = 0b00000001
@@ -15,15 +15,15 @@ class Exporter(object):
     
     def __init__(self, *args):
         
-        nodes = ls(args, et='transform')
+        nodes = pymel.ls(args, et='transform')
         if not args:
-            nodes = selected(et='transform')
+            nodes = pymel.selected(et='transform')
         
         self.msh = None
         
         for node in nodes:
             for shp in node.getShapes():
-                if isinstance(shp, nt.Mesh):
+                if isinstance(shp, pymel.nt.Mesh):
                     self.msh = node
                     break
                     
@@ -47,6 +47,8 @@ class Exporter(object):
             'uvs': [],
             'faces': [],
             
+            'bones': [],
+            
             'materials': [],
         }
         
@@ -55,10 +57,7 @@ class Exporter(object):
         self.db['metadata']['vertices'] = len(self.msh.vtx)
         
         for v in self.msh.vtx:
-            self.db['vertices'] += list(v.getPosition())
-            
-        for i,f in enumerate(self.db['vertices']):
-            self.db['vertices'][i]=round(f,5)
+            self.db['vertices'] += roundList(v.getPosition(),5)
 
 
         #export faces
@@ -89,7 +88,7 @@ class Exporter(object):
                 fa[0] += FACE_VERTEX_UV
                 
                 for v,uv in zip( vtx, zip(*f.getUVs()) ):
-                    uv = (round(uv[0],4), round(uv[1],4) )
+                    uv = roundList(uv)
                     
                     if not uvs.get(v):
                         uvs[v] = []
@@ -111,7 +110,7 @@ class Exporter(object):
                 fa[0] += FACE_VERTEX_NORMAL
                 
                 for v,n in zip( vtx, f.getNormals() ):
-                    n = (round(n[0],4), round(n[1],4), round(n[2],4) )
+                    n = roundList(n)
                     
                     if not normals.get(v):
                         normals[v] = []
@@ -164,24 +163,43 @@ class Exporter(object):
         self.db['metadata']['materials'] = len(self.db['materials'])
 
 
+        #export skeleton
+        skin = self.msh.listHistory(type='skinCluster')
+        if skin:
+            skin = skin[0]
+            infs = skin.getInfluence()
+            
+            bones  = []
 
+            for inf in infs:
+                b = {}
+                b['name'] = str(inf).split('|')[-1].split(':')[-1]
+                b['pos'] = roundList(inf.translate.get())
+                
+                _r = pymel.dt.EulerRotation(inf.jointOrient.get())
+                _m = pymel.dt.TransformationMatrix(_r.asMatrix())
+                b['rotq'] = roundList(_m.getRotationQuaternion())
+                
+                b['parent'] = -1
+                _p = inf.getParent()
+                if _p in infs:
+                    b['parent'] = infs.index(_p)
+                
+                bones.append(b)
+
+            
+            self.db['bones'] = bones
+            self.db['metadata']['bones'] = len(bones)
+
+
+
+        
         """
         #default skin
-        self.db['bones'] = [
-            {
-                'parent':-1,
-                'name': 'root',
-                'pos': [0,0,0],
-                'rotq': [0,0,0,1]
-            }
-        ]
         
-        self.db['metadata']['bones'] = len(self.db['bones'])
+        self.db['skinIndices'] = [x%2 for x in xrange(self.db['metadata']['vertices']*2)]
+        self.db['skinWeights'] = [(x+1)%2 for x in xrange(self.db['metadata']['vertices']*2)]
         
-        
-        self.db['skinIndices'] = [0 for x in xrange(self.db['metadata']['vertices'])]
-        self.db['skinWeights'] = [1 for x in xrange(self.db['metadata']['vertices'])]
-
         self.db['animation'] = {
             'name': 'anim0',
             'fps': 24,
@@ -203,14 +221,20 @@ class Exporter(object):
         """
 
 
-    def encode(self):
-        return json.dumps(
-            self.db,
-            cls=DecimalEncoder,
-            separators=(',', ': '),
-            indent=2
-        )
+    def encode(self, compact=False ):
+        if not compact:
+            return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ': '), indent=2 )
+        else:
+            return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ':') )
 
+
+
+def roundList(array, decimals=4):
+    new = []
+    for i,v in enumerate(array):
+        new.append(round(v,decimals))
+    return new
+        
 
 class DecimalEncoder(json.JSONEncoder):
     def _iterencode(self, o, markers=None):
