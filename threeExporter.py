@@ -12,52 +12,52 @@ FACE_VERTEX_COLOR  = 0b10000000
 
 
 class Exporter(object):
-    
+
     def __init__(self, *args):
-        
+
         nodes = pymel.ls(args, et='transform')
-        if not args:
+        if not nodes:
             nodes = pymel.selected(et='transform')
-        
+
         self.msh = None
-        
+
         for node in nodes:
             for shp in node.getShapes():
                 if isinstance(shp, pymel.nt.Mesh):
                     self.msh = node
                     break
-                    
+
         if not self.msh:
             raise RuntimeError('no mesh provided')
         else:
             print '# Exporting MESH: %s'%self.msh
-        
-        
+
+
         #db init
         self.db = {
             'metadata': {
                 'formatVersion' : 3.1,
                 'generatedBy'   : "yz Maya2012 Exporter"
-                },  
+                },
             'scale': 1,
-            
+
             'vertices': [],
             'normals': [],
             'colors': [],
             'uvs': [],
             'faces': [],
-            
+
             'bones': [],
-            
+
             'materials': [],
         }
-        
-        
+
+
         #export vertices
         self.db['metadata']['vertices'] = len(self.msh.vtx)
-        
+
         for v in self.msh.vtx:
-            self.db['vertices'] += roundList(v.getPosition(),5)
+            self.db['vertices'] += roundList(v.getPosition(space='world'),5)
 
 
         #export faces
@@ -66,7 +66,7 @@ class Exporter(object):
         uvs = {}
         normals = {}
         colors = {}
-        
+
         dbuv = []
         dbn  = []
 
@@ -74,69 +74,69 @@ class Exporter(object):
             vtx = f.getVertices()
             if len(vtx)>4:
                 self.db['metadata']['faces'] -= 1
-                
+
             else:
                 fa = [0]
                 fa += vtx
                 if len(vtx)==4:
                     fa[0] += FACE_QUAD
-                              
+
                 fa[0] += FACE_MATERIAL
                 fa.append(0)
-                
-                
+
+
                 fa[0] += FACE_VERTEX_UV
-                
+
                 for v,uv in zip( vtx, zip(*f.getUVs()) ):
                     uv = roundList(uv)
-                    
+
                     if not uvs.get(v):
                         uvs[v] = []
-                        
+
                     done = False
                     for _i,_uv in uvs[v]:
                         if _uv == uv:
                             fa.append(_i)
                             done = True
                             break
-                    
+
                     if not done:
                         i = len(dbuv)/2
                         dbuv += uv
                         uvs[v].append((i,uv))
                         fa.append(i)
-                    
-                    
+
+
                 fa[0] += FACE_VERTEX_NORMAL
-                
+
                 for v,n in zip( vtx, f.getNormals() ):
                     n = roundList(n)
-                    
+
                     if not normals.get(v):
                         normals[v] = []
-                        
+
                     done = False
                     for _i,_n in normals[v]:
                         if _n == n:
                             fa.append(_i)
                             done = True
                             break
-                    
+
                     if not done:
                         i = len(dbn)/3
                         dbn += n
                         normals[v].append((i,n))
-                        fa.append(i)             
+                        fa.append(i)
 
                 self.db['faces'] += fa
-                
+
         self.db['uvs'].append(dbuv)
         self.db['metadata']['uvs'] = len(dbuv)/2
-        
+
         self.db['normals'] = dbn
         self.db['metadata']['normals'] = len(dbn)/3
-                
-                
+
+
 
         #default mat
         m = {
@@ -144,13 +144,13 @@ class Exporter(object):
             'DbgIndex' : 0,
             'DbgName'  : 'dummy',
             'blending' : 'NormalBlending',
-            
+
             'colorDiffuse'  : (1,1,1),
             'colorAmbient'  : (0,0,0),
             'colorSpecular' : (.1,.1,.1),
             'mapDiffuse' : 'checker.jpg',
 
-	        'depthTest' : True,
+            'depthTest' : True,
             'depthWrite' : True,
             'shading' : 'Phong',
             'specularCoef' : 10,
@@ -159,7 +159,7 @@ class Exporter(object):
             'vertexColors' : False
         }
         self.db['materials'].append(m)
-        
+
         self.db['metadata']['materials'] = len(self.db['materials'])
 
 
@@ -167,58 +167,123 @@ class Exporter(object):
         skin = self.msh.listHistory(type='skinCluster')
         if skin:
             skin = skin[0]
-            infs = skin.getInfluence()
-            
-            bones  = []
+        else:
+            skin = None
 
+        if skin:
+            # export weights
+            # convert skinCluster with 2 bones per vertex
+
+            self.db['skinIndices'] = []
+            self.db['skinWeights'] = []
+
+            infs = skin.getInfluence()
+            infid = range(len(infs))
+
+            weights = []
+            for wmap in skin.getWeights(self.msh):
+                weights.append(wmap)
+
+            nweights=[]
+            for w in weights:
+                w = zip(infid,w)
+                w = sorted(w, key=lambda vweight: vweight[1])[-2:]
+                n = w[0][1]+w[1][1]
+
+                self.db['skinIndices'].append(w[1][0])
+                self.db['skinIndices'].append(w[0][0])
+                w1 = round( w[1][1]/n, 3 )
+                w0 = round( w[0][1]/n, 3 )
+                self.db['skinWeights'].append(w1)
+                self.db['skinWeights'].append(w0)
+
+
+            bones  = []
             for inf in infs:
                 b = {}
                 b['name'] = str(inf).split('|')[-1].split(':')[-1]
-                b['pos'] = roundList(inf.translate.get())
-                
-                _r = pymel.dt.EulerRotation(inf.jointOrient.get())
-                _m = pymel.dt.TransformationMatrix(_r.asMatrix())
-                b['rotq'] = roundList(_m.getRotationQuaternion())
-                
+
                 b['parent'] = -1
                 _p = inf.getParent()
                 if _p in infs:
                     b['parent'] = infs.index(_p)
-                
+                else:
+                    _p = None
+
+                _wm = pymel.dt.TransformationMatrix(inf.wm.get())
+                _m = _wm
+                if _p:
+                    _m *= _p.wim.get()
+
+                b['pos'] = roundList(_m.getTranslation('transform'))
+                b['rotq'] = roundList(_m.getRotationQuaternion())
+
                 bones.append(b)
 
-            
+
             self.db['bones'] = bones
             self.db['metadata']['bones'] = len(bones)
 
 
 
-        
-        """
-        #default skin
-        
-        self.db['skinIndices'] = [x%2 for x in xrange(self.db['metadata']['vertices']*2)]
-        self.db['skinWeights'] = [(x+1)%2 for x in xrange(self.db['metadata']['vertices']*2)]
-        
-        self.db['animation'] = {
-            'name': 'anim0',
-            'fps': 24,
-            'length': 1,
-            'hierarchy': [
-                {
-                    'parent': -1,
-                    'keys': [
-                        {
-                            'time': 0,
-                            'pos': [0,0,0],
-                            'rot': [0,0,0,1],
-                            'scl': [1,1,1]
-                        }
-                    ]
-                }
-            ]
-        }
-        """
+            #export simple anim
+            anim = {}
+            self.db['animation'] = anim
+
+            anim['name'] = 'anim0'
+
+            fps = dict(
+                game = 15,
+                film = 24,
+                pal = 25,
+                ntsc = 30,
+                show = 48,
+                palf = 50,
+                ntscf = 60
+                )[ pymel.currentUnit(query=True, time=True) ]
+
+            anim['fps'] = fps
+
+            _keys = pymel.keyframe(infs, query=True, timeChange=True)
+            _start = min(_keys)
+            _end = max(_keys)
+
+            anim['length'] = (_end-_start)/float(anim['fps'])
+            anim['hierarchy'] = []
+
+            for i,inf in enumerate(infs):
+                _inf = {}
+
+                _p = bones[i]['parent']
+                _inf['parent'] = _p
+
+                if _p != -1:
+                    _p = infs[_p]
+                else:
+                    _p = None
+
+                _inf['keys'] = []
+                for frame in xrange(_end-_start):
+                    _t = frame+_start
+
+                    _key = {}
+                    _key['time'] = frame/float(fps)
+
+                    _m = pymel.dt.TransformationMatrix(inf.wm.get(t=_t))
+                    if _p:
+                        _m *= _p.wim.get(t=_t)
+
+                    _key['pos'] = roundList(_m.getTranslation('transform'))
+                    _key['rot'] = roundList(_m.getRotationQuaternion())
+                    _key['scl'] = [1,1,1]
+
+                    _inf['keys'].append(_key)
+
+                _inf['keys'].append({'time':anim['length']})
+
+                anim['hierarchy'].append(_inf)
+
+
 
 
     def encode(self, compact=False ):
@@ -234,7 +299,7 @@ def roundList(array, decimals=4):
     for i,v in enumerate(array):
         new.append(round(v,decimals))
     return new
-        
+
 
 class DecimalEncoder(json.JSONEncoder):
     def _iterencode(self, o, markers=None):
