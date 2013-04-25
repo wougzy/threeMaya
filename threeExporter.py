@@ -1,5 +1,11 @@
+__version__ = '0.1'
+__author__ = 'Thomas Guittonneau'
+__email__ = 'mantus@free.fr'
+
+
 import pymel.core as pymel
 import json
+
 
 FACE_QUAD          = 0b00000001
 FACE_MATERIAL      = 0b00000010
@@ -9,6 +15,14 @@ FACE_NORMAL        = 0b00010000
 FACE_VERTEX_NORMAL = 0b00100000
 FACE_COLOR         = 0b01000000
 FACE_VERTEX_COLOR  = 0b10000000
+
+DECIMALS_VERTICES = 4
+DECIMALS_UVS      = 3
+DECIMALS_NORMALS  = 3
+DECIMALS_WEIGHTS  = 2
+DECIMALS_POS      = 3
+DECIMALS_ROT      = 3
+DECIMALS_TIME     = 3
 
 
 class Exporter(object):
@@ -57,7 +71,7 @@ class Exporter(object):
         self.db['metadata']['vertices'] = len(self.msh.vtx)
 
         for v in self.msh.vtx:
-            self.db['vertices'] += roundList(v.getPosition(space='world'),5)
+            self.db['vertices'] += roundList( v.getPosition(space='world'), DECIMALS_VERTICES )
 
 
         #export faces
@@ -88,7 +102,7 @@ class Exporter(object):
                 fa[0] += FACE_VERTEX_UV
 
                 for v,uv in zip( vtx, zip(*f.getUVs()) ):
-                    uv = roundList(uv)
+                    uv = roundList(uv, DECIMALS_UVS)
 
                     if not uvs.get(v):
                         uvs[v] = []
@@ -110,7 +124,7 @@ class Exporter(object):
                 fa[0] += FACE_VERTEX_NORMAL
 
                 for v,n in zip( vtx, f.getNormals() ):
-                    n = roundList(n)
+                    n = roundList(n, DECIMALS_NORMALS)
 
                     if not normals.get(v):
                         normals[v] = []
@@ -160,11 +174,11 @@ class Exporter(object):
         }
         self.db['materials'].append(m)
 
-        self.db['metadata']['materials'] = len(self.db['materials'])
+        self.db['metadata']['materials'] = len( self.db['materials'] )
 
 
         #export skeleton
-        skin = self.msh.listHistory(type='skinCluster')
+        skin = self.msh.listHistory( type='skinCluster' )
         if skin:
             skin = skin[0]
         else:
@@ -192,8 +206,8 @@ class Exporter(object):
 
                 self.db['skinIndices'].append(w[1][0])
                 self.db['skinIndices'].append(w[0][0])
-                w1 = round( w[1][1]/n, 3 )
-                w0 = round( w[0][1]/n, 3 )
+                w1 = round( w[1][1]/n, DECIMALS_WEIGHTS )
+                w0 = round( w[0][1]/n, DECIMALS_WEIGHTS )
                 self.db['skinWeights'].append(w1)
                 self.db['skinWeights'].append(w0)
 
@@ -204,19 +218,19 @@ class Exporter(object):
                 b['name'] = str(inf).split('|')[-1].split(':')[-1]
 
                 b['parent'] = -1
-                _p = inf.getParent()
-                if _p in infs:
-                    b['parent'] = infs.index(_p)
-                else:
-                    _p = None
+                _parent = None
+                for p in inf.getAllParents():
+                    if p in infs:
+                        _parent = p
+                        b['parent'] = infs.index(p)
+                        break
 
-                _wm = pymel.dt.TransformationMatrix(inf.wm.get())
-                _m = _wm
-                if _p:
-                    _m *= _p.wim.get()
+                _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get() )
+                if _parent:
+                    _m *= _parent.worldInverseMatrix.get()
 
-                b['pos'] = roundList(_m.getTranslation('transform'))
-                b['rotq'] = roundList(_m.getRotationQuaternion())
+                b['pos'] = roundList( _m.getTranslation('transform'), DECIMALS_POS )
+                b['rotq'] = roundList( _m.getRotationQuaternion(), DECIMALS_ROT )
 
                 bones.append(b)
 
@@ -248,38 +262,39 @@ class Exporter(object):
             _start = min(_keys)
             _end = max(_keys)
 
-            anim['length'] = (_end-_start)/float(anim['fps'])
+            anim['length'] = round( (_end-_start)/float(anim['fps']), DECIMALS_TIME )
             anim['hierarchy'] = []
 
             for i,inf in enumerate(infs):
                 _inf = {}
 
-                _p = bones[i]['parent']
-                _inf['parent'] = _p
+                _parent = bones[i]['parent']
+                _inf['parent'] = _parent
 
-                if _p != -1:
-                    _p = infs[_p]
+                if _parent != -1:
+                    _parent = infs[_parent]
                 else:
-                    _p = None
+                    _parent = None
 
                 _inf['keys'] = []
-                for frame in xrange(_end-_start):
+                for frame in xrange( _end - _start ):
                     _t = frame+_start
 
                     _key = {}
-                    _key['time'] = frame/float(fps)
+                    _key['time'] = round( frame/float(fps), DECIMALS_TIME )
 
-                    _m = pymel.dt.TransformationMatrix(inf.wm.get(t=_t))
-                    if _p:
-                        _m *= _p.wim.get(t=_t)
+                    _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get(time=_t) )
+                    if _parent:
+                        _m *= _parent.worldInverseMatrix.get(time=_t)
 
-                    _key['pos'] = roundList(_m.getTranslation('transform'))
-                    _key['rot'] = roundList(_m.getRotationQuaternion())
-                    _key['scl'] = [1,1,1]
+                    _key['pos'] = roundList( _m.getTranslation('transform'), DECIMALS_POS )
+                    _key['rot'] = roundList( _m.getRotationQuaternion(), DECIMALS_ROT )
+                    if frame==0:
+                        _key['scl'] = [1,1,1]
 
                     _inf['keys'].append(_key)
 
-                _inf['keys'].append({'time':anim['length']})
+                _inf['keys'].append( {'time': anim['length']} )
 
                 anim['hierarchy'].append(_inf)
 
