@@ -1,6 +1,6 @@
 __version__ = '0.1'
 __author__ = 'Thomas Guittonneau'
-__email__ = 'mantus@free.fr'
+__email__ = 'wougzy@gmail.com'
 
 
 import pymel.core as pymel
@@ -302,10 +302,21 @@ class Exporter(object):
 
 
     def encode(self, compact=False ):
+        #todo: smart compact mode
         if not compact:
             return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ': '), indent=2 )
         else:
             return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ':') )
+
+
+    def write(path):
+        #todo: check path validity
+        #todo: confirm overwrite
+
+        f = open(path,'w')
+        f.write(e.encode(0), compact=True)
+        f.close()
+
 
 
 
