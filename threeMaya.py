@@ -129,8 +129,8 @@ class Exporter(object):
 
                 _t = mat.transparency.get()
                 _t = 1 - (_t[0]+_t[1]+_t[2]) / 3
-                if _t<1:
-                    m['transparency'] = mat.transparency.get()[0]
+                if _t < 1:
+                    m['transparency'] = _t
                     m['transparent'] = True
 
             if _nt in ('phong', 'blinn'):
