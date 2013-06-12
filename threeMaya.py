@@ -1,8 +1,20 @@
-__version__ = '0.1'
+__version__ = '0.2'
 __author__ = 'Thomas Guittonneau'
 __email__ = 'wougzy@gmail.com'
 
 
+# Three.js scene exporter for Maya
+# JSON Model format 3.1
+
+# todo:
+# -secure skeleton/weights export (maxInf, 2 joints)
+# -secure file writing
+# -export vertex colors
+# -export blendshapes
+
+
+import os.path
+import shutil
 import pymel.core as pymel
 import json
 
@@ -46,6 +58,13 @@ class Exporter(object):
         else:
             print '# Exporting MESH: %s'%self.msh
 
+        self.shape = None
+        for _shp in self.msh.getShapes():
+            if _shp.io.get()==0:
+                self.shape = _shp
+                break
+
+
 
         #db init
         self.db = {
@@ -54,21 +73,89 @@ class Exporter(object):
                 'generatedBy'   : "yz Maya2012 Exporter"
                 },
             'scale': 1,
-
-            'vertices': [],
-            'normals': [],
-            'colors': [],
-            'uvs': [],
-            'faces': [],
-
-            'bones': [],
-
-            'materials': [],
         }
+
+
+        #export materials
+        self.db['materials'] = []
+        self.textures = []
+
+        sgs = list(set( self.shape.outputs(type='shadingEngine') ))
+        sgf = []
+
+        if len(sgs) > 1:
+            for sg in sgs:
+                ids = []
+                for _f in pymel.ls( sg.members(), flatten=1 ):
+                    if isinstance(_f, pymel.MeshFace):
+                        ids.append(_f)
+                sgf.append(ids)
+
+
+        for i,sg in enumerate(sgs):
+
+            mat = sg.surfaceShader.inputs()[0]
+
+            m = {
+                'id' : i,
+                'name' : str(mat),
+
+                'DbgColor' : 0xFFFFFF,
+                'DbgIndex' : i,
+                'DbgName'  : str(mat),
+
+                'shading' : 'Lambert',
+
+                #'blending' : 'NormalBlending',
+                #'depthTest' : True,
+                #'depthWrite' : True,
+                #'visible' : True
+                #'wireframe': True,
+                #'vertexColors' : False,
+            }
+
+            self.db['materials'].append(m)
+
+
+            _nt = pymel.nodeType(mat)
+            if _nt in ('lambert', 'phong', 'blinn'):
+                m['shading'] = 'Phong'
+                m['colorDiffuse'] = mat.color.get()
+                m['colorAmbient'] = mat.ambientColor.get()
+
+                self.setTextureInfo(i, 'mapDiffuse', mat.color )
+                #self.setTextureInfo(i, 'mapLight', mat.ambientColor )
+                self.setTextureInfo(i, 'mapBump', mat.normalCamera )
+
+                _t = mat.transparency.get()
+                _t = 1 - (_t[0]+_t[1]+_t[2]) / 3
+                if _t<1:
+                    m['transparency'] = mat.transparency.get()[0]
+                    m['transparent'] = True
+
+            if _nt in ('phong', 'blinn'):
+                m['colorSpecular'] = mat.specularColor.get()
+                m['specularCoef'] = 10
+
+                self.setTextureInfo(i, 'mapSpecular', mat.specularColor )
+
+            if _nt == 'surfaceShader':
+                m['shading'] = 'Basic'
+
+
+            if self.shape.doubleSided.get():
+                m['doubleSided'] = True
+            elif self.shape.opposite.get():
+                m['flipSided'] = True
+
+
+        self.db['metadata']['materials'] = len( self.db['materials'] )
+
 
 
         #export vertices
         self.db['metadata']['vertices'] = len(self.msh.vtx)
+        self.db['vertices'] = []
 
         for v in self.msh.vtx:
             self.db['vertices'] += roundList( v.getPosition(space='world'), DECIMALS_VERTICES )
@@ -76,6 +163,10 @@ class Exporter(object):
 
         #export faces
         self.db['metadata']['faces'] = len(self.msh.faces)
+        self.db['faces'] = []
+        self.db['uvs'] = []
+        self.db['normals'] = []
+        #self.db['colors'] = []
 
         uvs = {}
         normals = {}
@@ -96,7 +187,13 @@ class Exporter(object):
                     fa[0] += FACE_QUAD
 
                 fa[0] += FACE_MATERIAL
-                fa.append(0)
+                if len(sgs)==1:
+                    fa.append(0)
+                else:
+                    for i,fset in enumerate(sgf):
+                        if f in fset:
+                            fa.append(i)
+                            break
 
 
                 fa[0] += FACE_VERTEX_UV
@@ -152,31 +249,6 @@ class Exporter(object):
 
 
 
-        #default mat
-        m = {
-            'DbgColor' : 0xFFFFFF,
-            'DbgIndex' : 0,
-            'DbgName'  : 'dummy',
-            'blending' : 'NormalBlending',
-
-            'colorDiffuse'  : (1,1,1),
-            'colorAmbient'  : (0,0,0),
-            'colorSpecular' : (.1,.1,.1),
-            'mapDiffuse' : 'checker.jpg',
-
-            'depthTest' : True,
-            'depthWrite' : True,
-            'shading' : 'Phong',
-            'specularCoef' : 10,
-            'transparency' : 1.0,
-            'transparent' : False,
-            'vertexColors' : False
-        }
-        self.db['materials'].append(m)
-
-        self.db['metadata']['materials'] = len( self.db['materials'] )
-
-
         #export skeleton
         skin = self.msh.listHistory( type='skinCluster' )
         if skin:
@@ -213,6 +285,7 @@ class Exporter(object):
 
 
             bones  = []
+
             for inf in infs:
                 b = {}
                 b['name'] = str(inf).split('|')[-1].split(':')[-1]
@@ -235,68 +308,117 @@ class Exporter(object):
                 bones.append(b)
 
 
-            self.db['bones'] = bones
             self.db['metadata']['bones'] = len(bones)
+            self.db['bones'] = bones
+
 
 
 
             #export simple anim
-            anim = {}
-            self.db['animation'] = anim
-
-            anim['name'] = 'anim0'
-
-            fps = dict(
-                game = 15,
-                film = 24,
-                pal = 25,
-                ntsc = 30,
-                show = 48,
-                palf = 50,
-                ntscf = 60
-                )[ pymel.currentUnit(query=True, time=True) ]
-
-            anim['fps'] = fps
-
             _keys = pymel.keyframe(infs, query=True, timeChange=True)
-            _start = min(_keys)
-            _end = max(_keys)
 
-            anim['length'] = round( (_end-_start)/float(anim['fps']), DECIMALS_TIME )
-            anim['hierarchy'] = []
+            if _keys:
+                anim = {}
+                self.db['animation'] = anim
 
-            for i,inf in enumerate(infs):
-                _inf = {}
+                anim['name'] = 'anim0'
 
-                _parent = bones[i]['parent']
-                _inf['parent'] = _parent
+                fps = dict(
+                    game = 15,
+                    film = 24,
+                    pal = 25,
+                    ntsc = 30,
+                    show = 48,
+                    palf = 50,
+                    ntscf = 60
+                    )[ pymel.currentUnit(query=True, time=True) ]
 
-                if _parent != -1:
-                    _parent = infs[_parent]
+                anim['fps'] = fps
+
+
+                anim['length'] = round( (_end-_start)/float(anim['fps']), DECIMALS_TIME )
+                anim['hierarchy'] = []
+
+                for i,inf in enumerate(infs):
+                    _inf = {}
+
+                    _parent = bones[i]['parent']
+                    _inf['parent'] = _parent
+
+                    if _parent != -1:
+                        _parent = infs[_parent]
+                    else:
+                        _parent = None
+
+                    _inf['keys'] = []
+                    _start = min(_keys)
+                    _end = max(_keys)
+
+                    for frame in xrange( _end - _start ):
+                        _t = frame+_start
+
+                        _key = {}
+                        _key['time'] = round( frame/float(fps), DECIMALS_TIME )
+
+                        _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get(time=_t) )
+                        if _parent:
+                            _m *= _parent.worldInverseMatrix.get(time=_t)
+
+                        _key['pos'] = roundList( _m.getTranslation('transform'), DECIMALS_POS )
+                        _key['rot'] = roundList( _m.getRotationQuaternion(), DECIMALS_ROT )
+                        if frame==0:
+                            _key['scl'] = [1,1,1]
+
+                        _inf['keys'].append(_key)
+
+                    _inf['keys'].append( {'time': anim['length']} )
+
+                    anim['hierarchy'].append(_inf)
+
+
+
+    def setTextureInfo(self, i, mode, attr ):
+
+        src = attr.inputs()
+        ok = False
+
+        if src:
+            infos = {}
+            infos['id'] = i
+            infos['mode'] = mode
+
+            src = src[0]
+            _nt = pymel.nodeType(src)
+
+            if _nt == 'file':
+                infos['file'] = os.path.realpath( src.fileTextureName.get() )
+                ok = True
+
+            elif _nt == 'bump2d':
+                b = src.bumpInterp.get()
+                if b == 0:
+                    pass
                 else:
-                    _parent = None
+                    mode = 'mapNormal'
 
-                _inf['keys'] = []
-                for frame in xrange( _end - _start ):
-                    _t = frame+_start
+            else:
+                infos['bake'] = src
+                ok = True
 
-                    _key = {}
-                    _key['time'] = round( frame/float(fps), DECIMALS_TIME )
 
-                    _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get(time=_t) )
-                    if _parent:
-                        _m *= _parent.worldInverseMatrix.get(time=_t)
+        if ok:
 
-                    _key['pos'] = roundList( _m.getTranslation('transform'), DECIMALS_POS )
-                    _key['rot'] = roundList( _m.getRotationQuaternion(), DECIMALS_ROT )
-                    if frame==0:
-                        _key['scl'] = [1,1,1]
+            if mode == 'mapDiffuse':
+                del( self.db['materials'][i]['colorDiffuse'] )
+            if mode == 'mapSpecular':
+                del( self.db['materials'][i]['colorSpecular'] )
 
-                    _inf['keys'].append(_key)
+            self.db['materials'][i]['%sRepeat'%mode] = (True, True)
 
-                _inf['keys'].append( {'time': anim['length']} )
+            self.textures.append(infos)
 
-                anim['hierarchy'].append(_inf)
+        #options: 'Repeat', 'Offset', 'Wrap', 'Anisotropy'
+        #mode bump: 'mapBumpScale', 'mapNormalFactor'
 
 
 
@@ -309,13 +431,39 @@ class Exporter(object):
             return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ':') )
 
 
-    def write(path):
+
+    def write(self, name, path, compact=False):
         #todo: check path validity
         #todo: confirm overwrite
 
-        f = open(path,'w')
-        f.write(e.encode(0), compact=True)
+
+        #copy/generate texture file
+        map_folder = os.path.join( path, name )
+
+        for m in self.textures:
+            mode = m['mode']
+            i = m['id']
+
+            f = m.get('file')
+            if f:
+                if not os.path.exists(map_folder):
+                    os.makedirs(map_folder)
+                shutil.copyfile(f, os.path.join(map_folder, os.path.basename(f)) )
+            else:
+                bake = m.get('bake')
+                #todo: bake texture
+
+            if f:
+                self.db['materials'][i][mode] = '%s/%s' % (name, os.path.basename(f) )
+
+
+        # write json file
+        js = path+'/'+name+'.js'
+
+        f = open(js,'w')
+        f.write( self.encode(compact) )
         f.close()
+
 
 
 
