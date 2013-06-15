@@ -1,4 +1,4 @@
-__version__ = '0.2'
+__version__ = '0.3'
 __author__ = 'Thomas Guittonneau'
 __email__ = 'wougzy@gmail.com'
 
@@ -11,12 +11,13 @@ __email__ = 'wougzy@gmail.com'
 # -secure file writing
 # -export vertex colors
 # -export blendshapes
+# -better texture handling (bake, 2d placement)
+# -export bump textures
 
 
 import os.path
 import shutil
 import pymel.core as pymel
-import json
 
 
 FACE_QUAD          = 0b00000001
@@ -35,6 +36,18 @@ DECIMALS_WEIGHTS  = 2
 DECIMALS_POS      = 3
 DECIMALS_ROT      = 3
 DECIMALS_TIME     = 3
+
+ORDERED_DICTS = (
+    ( 'metadata', 'scale', 'materials', 'vertices', 'normals', 'colors', 'uvs', 'faces',
+        'morphTargets', 'bones', 'skinIndices', 'skinWeights', 'animation' ),
+
+    ( 'formatVersion', 'generatedBy', 'vertices', 'faces', 'normals', 'colors', 'uvs', 'materials', 'morphTargets', 'bones' ),
+
+    ( 'name', 'id', 'DbgName', 'DbgColor', 'DbgIndex', 'shading', 'blending',
+        'colorAmbient', 'colorDiffuse', 'colorSpecular', 'mapDiffuse',
+        'specularCoef', 'transparency', 'transparent',
+        'depthTest', 'depthWrite', 'doubleSided', 'vertexColors' )
+)
 
 
 class Exporter(object):
@@ -103,8 +116,6 @@ class Exporter(object):
                 'DbgColor' : 0xFFFFFF,
                 'DbgIndex' : i,
                 'DbgName'  : str(mat),
-
-                'shading' : 'Lambert',
 
                 #'blending' : 'NormalBlending',
                 #'depthTest' : True,
@@ -313,7 +324,6 @@ class Exporter(object):
 
 
 
-
             #export simple anim
             _keys = pymel.keyframe(infs, query=True, timeChange=True)
 
@@ -422,13 +432,79 @@ class Exporter(object):
 
 
 
+    def encode(self, compact=False):
 
-    def encode(self, compact=False ):
-        #todo: smart compact mode
-        if not compact:
-            return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ': '), indent=2 )
+        self.dump = ''
+        self.dump_indent = ''
+        self.dump_step = 2
+
+        self.iterencode(self.db)
+
+        return self.dump
+
+
+
+    def iterencode(self, o):
+
+        if isinstance(o, dict):
+            self.iterindent(1)
+            self.dump += '{\n'
+
+            keys = o.keys()
+            order = {}
+            for d in ORDERED_DICTS:
+                if len(order) < len( set(keys).intersection(d) ):
+                    order = {}
+                    for i,de in enumerate(d):
+                        order[de] = i
+            keys = sorted( keys, key=lambda k: order.get(k) )
+
+            last = len(keys)-1
+            for i,key in enumerate(keys):
+                self.dump += self.dump_indent
+                self.dump += '"%s": ' % key
+
+                self.iterencode(o[key])
+                if i!=last:
+                    self.dump += ','
+                self.dump += '\n'
+
+            self.iterindent(-1)
+            self.dump += '%s}' % self.dump_indent
+
+        elif isinstance(o, list) or isinstance(o, tuple):
+            self.dump += '['
+
+            last = len(o)-1
+            for i,e in enumerate(o):
+                if isinstance(e, dict):
+                    self.dump += '\n%s' % self.dump_indent
+                self.iterencode(e)
+                if i != last:
+                    self.dump += ','
+                    if last < 5:
+                        self.dump += ' '
+
+            self.dump += ']'
+
+        elif isinstance(o, bool):
+            if o: self.dump += 'true'
+            else: self.dump += 'false'
+
+        elif isinstance(o, str) or isinstance(o, unicode):
+            self.dump += '"%s"' % str(o)
+
         else:
-            return json.dumps(self.db, cls=DecimalEncoder, separators=(',', ':') )
+            self.dump += str(o)
+
+
+
+    def iterindent(self, i):
+
+        v = len(self.dump_indent) + i*self.dump_step
+        self.dump_indent = ''
+        for i in xrange(v):
+            self.dump_indent += ' '
 
 
 
@@ -473,14 +549,4 @@ def roundList(array, decimals=4):
     for i,v in enumerate(array):
         new.append(round(v,decimals))
     return new
-
-
-class DecimalEncoder(json.JSONEncoder):
-    def _iterencode(self, o, markers=None):
-        if isinstance(o, float):
-            return (str(o) for o in [o])
-        return super(DecimalEncoder, self)._iterencode(o, markers)
-
-
-
 
