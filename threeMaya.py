@@ -34,7 +34,7 @@ DECIMALS_UVS      = 3
 DECIMALS_NORMALS  = 3
 DECIMALS_WEIGHTS  = 2
 DECIMALS_POS      = 3
-DECIMALS_ROT      = 3
+DECIMALS_ROT      = 5
 DECIMALS_TIME     = 3
 
 ORDERED_DICTS = (
@@ -58,28 +58,34 @@ class Exporter(object):
         if not nodes:
             nodes = pymel.selected(et='transform')
 
-        self.msh = None
+        _sl = pymel.selected()
+        pymel.select(nodes, hi=1)
+        nodes = pymel.selected()
+        pymel.select(_sl)
 
-        for node in nodes:
+        geo = []
+        for node in pymel.ls(nodes, et='mesh'):
+            msh = node.getParent()
+            if not msh in geo:
+                geo.append(msh)
+
+        self.meshes = []
+        self.shapes = []
+
+        for node in geo:
             for shp in node.getShapes():
-                if isinstance(shp, pymel.nt.Mesh):
-                    self.msh = node
-                    break
+                if isinstance(shp, pymel.nt.Mesh) and shp.io.get()==0:
+                    self.meshes.append(node)
+                    self.shapes.append(shp)
 
-        if not self.msh:
+        if not self.meshes:
             raise RuntimeError('no mesh provided')
         else:
-            print '# Exporting MESH: %s'%self.msh
-
-        self.shape = None
-        for _shp in self.msh.getShapes():
-            if _shp.io.get()==0:
-                self.shape = _shp
-                break
+            print '# Exporting MESHES: %s'%str(self.meshes)
 
 
 
-        #db init
+        # db init
         self.db = {
             'metadata': {
                 'formatVersion' : 3.1,
@@ -89,11 +95,36 @@ class Exporter(object):
         }
 
 
-        #export materials
-        self.db['materials'] = []
+        self.materials = []
         self.textures = []
+        self.db['materials'] = []
 
-        sgs = list(set( self.shape.outputs(type='shadingEngine') ))
+        self.vertices = []
+        self.faces = []
+        self.db['vertices'] = []
+        self.db['faces'] = []
+        self.db['uvs'] = [[]]
+        self.db['normals'] = []
+        #self.db['colors'] = []
+
+        self.db['metadata']['vertices'] = 0
+        self.db['metadata']['faces'] = 0
+
+        for msh,shp in zip(self.meshes, self.shapes):
+            self.exportGeometry(msh,shp)
+
+        self.db['metadata']['materials'] = len( self.db['materials'] )
+        self.db['metadata']['uvs'] = len(self.db['uvs'][0])/2
+        self.db['metadata']['normals'] = len(self.db['normals'])/3
+
+
+
+
+
+    def exportGeometry(self, msh, shp):
+
+        # export materials
+        sgs = list(set( shp.outputs(type='shadingEngine') ))
         sgf = []
 
         if len(sgs) > 1:
@@ -105,79 +136,92 @@ class Exporter(object):
                 sgf.append(ids)
 
 
-        for i,sg in enumerate(sgs):
+        sgi = []
 
+        for sg in sgs:
             mat = sg.surfaceShader.inputs()[0]
+            if str(mat) in self.materials:
+                pass
+            else:
+                i = len(self.materials)
+                self.materials.append(str(mat))
 
-            m = {
-                'id' : i,
-                'name' : str(mat),
+                m = {
+                    'id' : i,
+                    'name' : str(mat),
 
-                'DbgColor' : 0xFFFFFF,
-                'DbgIndex' : i,
-                'DbgName'  : str(mat),
+                    'DbgColor' : 0xFFFFFF,
+                    'DbgIndex' : i,
+                    'DbgName'  : str(mat),
 
-                #'blending' : 'NormalBlending',
-                #'depthTest' : True,
-                #'depthWrite' : True,
-                #'visible' : True
-                #'wireframe': True,
-                #'vertexColors' : False,
-            }
+                    #'blending' : 'NormalBlending',
+                    #'depthTest' : True,
+                    #'depthWrite' : True,
+                    #'visible' : True
+                    #'wireframe': True,
+                    #'vertexColors' : False,
+                }
 
-            self.db['materials'].append(m)
-
-
-            _nt = pymel.nodeType(mat)
-            if _nt in ('lambert', 'phong', 'blinn'):
-                m['shading'] = 'Phong'
-                m['colorDiffuse'] = mat.color.get()
-                m['colorAmbient'] = mat.ambientColor.get()
-
-                self.setTextureInfo(i, 'mapDiffuse', mat.color )
-                #self.setTextureInfo(i, 'mapLight', mat.ambientColor )
-                self.setTextureInfo(i, 'mapBump', mat.normalCamera )
-
-                _t = mat.transparency.get()
-                _t = 1 - (_t[0]+_t[1]+_t[2]) / 3
-                if _t < 1:
-                    m['transparency'] = _t
-                    m['transparent'] = True
-
-            if _nt in ('phong', 'blinn'):
-                m['colorSpecular'] = mat.specularColor.get()
-                m['specularCoef'] = 10
-
-                self.setTextureInfo(i, 'mapSpecular', mat.specularColor )
-
-            if _nt == 'surfaceShader':
-                m['shading'] = 'Basic'
+                self.db['materials'].append(m)
 
 
-            if self.shape.doubleSided.get():
-                m['doubleSided'] = True
-            elif self.shape.opposite.get():
-                m['flipSided'] = True
+                _nt = pymel.nodeType(mat)
+                if _nt in ('lambert', 'phong', 'blinn'):
+                    m['shading'] = 'Phong'
+                    m['colorDiffuse'] = mat.color.get()
+                    #m['colorAmbient'] = mat.ambientColor.get()
+                    m['colorEmissive'] = mat.incandescence.get()
+
+                    self.setTextureInfo(i, 'mapDiffuse', mat.color )
+                    #self.setTextureInfo(i, 'mapLight', mat.ambientColor )
+                    self.setTextureInfo(i, 'mapBump', mat.normalCamera )
+
+                    _t = mat.transparency.get()
+                    _t = 1 - (_t[0]+_t[1]+_t[2]) / 3
+                    if _t < 1:
+                        m['transparency'] = _t
+                        m['transparent'] = True
+
+                if _nt in ('phong', 'blinn'):
+                    m['colorSpecular'] = mat.specularColor.get()
+                    m['specularCoef'] = 10
+
+                    self.setTextureInfo(i, 'mapSpecular', mat.specularColor )
+
+                if _nt == 'surfaceShader':
+                    m['shading'] = 'Basic'
+                    m['colorDiffuse'] = mat.outColor.get()
 
 
-        self.db['metadata']['materials'] = len( self.db['materials'] )
+                if shp.doubleSided.get():
+                    m['doubleSided'] = True
+                elif shp.opposite.get():
+                    m['flipSided'] = True
+
+            sgi.append( self.materials.index(str(mat)) )
 
 
 
-        #export vertices
-        self.db['metadata']['vertices'] = len(self.msh.vtx)
-        self.db['vertices'] = []
+        # export vertices
+        _v = len(msh.vtx)
+        _voffset = self.db['metadata']['vertices']
+        self.db['metadata']['vertices'] += _v
+        self.vertices.append(_v)
 
-        for v in self.msh.vtx:
+        for v in msh.vtx:
             self.db['vertices'] += roundList( v.getPosition(space='world'), DECIMALS_VERTICES )
 
 
-        #export faces
-        self.db['metadata']['faces'] = len(self.msh.faces)
-        self.db['faces'] = []
-        self.db['uvs'] = []
-        self.db['normals'] = []
-        #self.db['colors'] = []
+
+        # export faces
+        _f = len(msh.faces)
+        _foffset = self.db['metadata']['faces']
+        self.db['metadata']['faces'] += _f
+        self.faces.append(_f)
+
+
+        _noffset = len(self.db['normals'])/3
+        _uvoffset = len(self.db['uvs'][0])/2
 
         uvs = {}
         normals = {}
@@ -186,28 +230,32 @@ class Exporter(object):
         dbuv = []
         dbn  = []
 
-        for f in self.msh.faces:
-            vtx = f.getVertices()
+
+        for f in msh.faces:
+            vtx = [x+_voffset for x in f.getVertices()]
             if len(vtx)>4:
                 self.db['metadata']['faces'] -= 1
+                self.faces[-1] -= 1
 
             else:
-                fa = [0]
-                fa += vtx
+                dbf = [0]
+                dbf += vtx
                 if len(vtx)==4:
-                    fa[0] += FACE_QUAD
+                    dbf[0] += FACE_QUAD
 
-                fa[0] += FACE_MATERIAL
+
+                dbf[0] += FACE_MATERIAL
+
                 if len(sgs)==1:
-                    fa.append(0)
+                    dbf.append(sgi[0])
                 else:
                     for i,fset in enumerate(sgf):
                         if f in fset:
-                            fa.append(i)
+                            dbf.append(sgi[i])
                             break
 
 
-                fa[0] += FACE_VERTEX_UV
+                dbf[0] += FACE_VERTEX_UV
 
                 for v,uv in zip( vtx, zip(*f.getUVs()) ):
                     uv = roundList(uv, DECIMALS_UVS)
@@ -218,7 +266,7 @@ class Exporter(object):
                     done = False
                     for _i,_uv in uvs[v]:
                         if _uv == uv:
-                            fa.append(_i)
+                            dbf.append(_i)
                             done = True
                             break
 
@@ -226,10 +274,10 @@ class Exporter(object):
                         i = len(dbuv)/2
                         dbuv += uv
                         uvs[v].append((i,uv))
-                        fa.append(i)
+                        dbf.append(i)
 
 
-                fa[0] += FACE_VERTEX_NORMAL
+                dbf[0] += FACE_VERTEX_NORMAL
 
                 for v,n in zip( vtx, f.getNormals() ):
                     n = roundList(n, DECIMALS_NORMALS)
@@ -240,7 +288,7 @@ class Exporter(object):
                     done = False
                     for _i,_n in normals[v]:
                         if _n == n:
-                            fa.append(_i)
+                            dbf.append(_i+_noffset)
                             done = True
                             break
 
@@ -248,65 +296,98 @@ class Exporter(object):
                         i = len(dbn)/3
                         dbn += n
                         normals[v].append((i,n))
-                        fa.append(i)
+                        dbf.append(i+_noffset)
 
-                self.db['faces'] += fa
+                self.db['faces'] += dbf
 
-        self.db['uvs'].append(dbuv)
-        self.db['metadata']['uvs'] = len(dbuv)/2
 
-        self.db['normals'] = dbn
-        self.db['metadata']['normals'] = len(dbn)/3
+        self.db['uvs'][0].extend(dbuv)
+        self.db['normals'].extend(dbn)
 
 
 
-        #export skeleton
-        skin = self.msh.listHistory( type='skinCluster' )
-        if skin:
-            skin = skin[0]
-        else:
-            skin = None
 
-        if skin:
-            # export weights
-            # convert skinCluster with 2 bones per vertex
 
+    def exportSkeleton(self):
+
+        # export skeleton
+        deformed = False
+
+        for msh in self.shapes:
+            skin = msh.listHistory( type='skinCluster' )
+            if skin:
+                deformed = True
+                break
+
+        if deformed:
             self.db['skinIndices'] = []
             self.db['skinWeights'] = []
 
-            infs = skin.getInfluence()
-            infid = range(len(infs))
 
-            weights = []
-            for wmap in skin.getWeights(self.msh):
-                weights.append(wmap)
+            # export bones
+            self.infs = []
 
-            nweights=[]
-            for w in weights:
-                w = zip(infid,w)
-                w = sorted(w, key=lambda vweight: vweight[1])[-2:]
-                n = w[0][1]+w[1][1]
+            for msh in self.shapes:
 
-                self.db['skinIndices'].append(w[1][0])
-                self.db['skinIndices'].append(w[0][0])
-                w1 = round( w[1][1]/n, DECIMALS_WEIGHTS )
-                w0 = round( w[0][1]/n, DECIMALS_WEIGHTS )
-                self.db['skinWeights'].append(w1)
-                self.db['skinWeights'].append(w0)
+                skin = msh.listHistory( type='skinCluster' )
+                if skin:
+                    skin = skin[0]
+                else:
+                    skin = None
+
+                if skin:
+                    infs = skin.getInfluence()
+                    for inf in infs:
+                        if not inf in self.infs:
+                            self.infs.append(inf)
 
 
-            bones  = []
+                    # export weights
+                    # convert skinCluster with 2 bones per vertex
+                    infid = [self.infs.index(x) for x in infs]
 
-            for inf in infs:
+                    weights = []
+                    for wmap in skin.getWeights(msh):
+                        weights.append(wmap)
+
+                    nweights=[]
+                    for w in weights:
+                        if len(infid)>1:
+                            w = zip(infid,w)
+                            w = sorted(w, key=lambda vweight: vweight[1])[-2:]
+                            n = w[0][1]+w[1][1]
+
+                            self.db['skinIndices'].append(w[1][0])
+                            self.db['skinIndices'].append(w[0][0])
+                            w1 = round( w[1][1]/n, DECIMALS_WEIGHTS )
+                            w0 = round( w[0][1]/n, DECIMALS_WEIGHTS )
+                            self.db['skinWeights'].append(w1)
+                            self.db['skinWeights'].append(w0)
+
+                        else:
+                            self.db['skinWeights'].append(1)
+                            self.db['skinWeights'].append(0)
+                            self.db['skinIndices'].append(infid[0])
+                            self.db['skinIndices'].append(-1)
+
+
+                else:
+                    pass
+                    #mais pas oublier de faire les mesh non anime aussi
+
+
+            self.bones  = []
+
+            for inf in self.infs:
                 b = {}
                 b['name'] = str(inf).split('|')[-1].split(':')[-1]
 
                 b['parent'] = -1
                 _parent = None
                 for p in inf.getAllParents():
-                    if p in infs:
+                    if p in self.infs:
                         _parent = p
-                        b['parent'] = infs.index(p)
+                        b['parent'] = self.infs.index(p)
                         break
 
                 _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get() )
@@ -316,16 +397,22 @@ class Exporter(object):
                 b['pos'] = roundList( _m.getTranslation('transform'), DECIMALS_POS )
                 b['rotq'] = roundList( _m.getRotationQuaternion(), DECIMALS_ROT )
 
-                bones.append(b)
+                self.bones.append(b)
 
 
-            self.db['metadata']['bones'] = len(bones)
-            self.db['bones'] = bones
+            self.db['metadata']['bones'] = len(self.bones)
+            self.db['bones'] = self.bones
 
 
 
-            #export simple anim
-            _keys = pymel.keyframe(infs, query=True, timeChange=True)
+
+
+    def exportAnimation(self, _start, _end):
+
+            self.infs = [pymel.PyNode(str(x)) for x in self.infs]
+
+            # export simple anim
+            _keys = pymel.keyframe(self.infs, query=True, timeChange=True)
 
             if _keys:
                 anim = {}
@@ -345,26 +432,25 @@ class Exporter(object):
 
                 anim['fps'] = fps
 
-
-                anim['length'] = round( (_end-_start)/float(anim['fps']), DECIMALS_TIME )
                 anim['hierarchy'] = []
 
-                for i,inf in enumerate(infs):
+                for i,inf in enumerate(self.infs):
                     _inf = {}
 
-                    _parent = bones[i]['parent']
+                    _parent = self.bones[i]['parent']
                     _inf['parent'] = _parent
 
                     if _parent != -1:
-                        _parent = infs[_parent]
+                        _parent = self.infs[_parent]
                     else:
                         _parent = None
 
                     _inf['keys'] = []
-                    _start = min(_keys)
-                    _end = max(_keys)
+                    #_start = min(_keys)
+                    #_end = max(_keys)
+                    anim['length'] = round( (_end-_start)/float(anim['fps']), DECIMALS_TIME )
 
-                    for frame in xrange( _end - _start ):
+                    for frame in xrange( int(_end - _start) ):
                         _t = frame+_start
 
                         _key = {}
@@ -384,6 +470,8 @@ class Exporter(object):
                     _inf['keys'].append( {'time': anim['length']} )
 
                     anim['hierarchy'].append(_inf)
+
+
 
 
 

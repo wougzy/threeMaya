@@ -138,6 +138,15 @@ var initBindings = function(canvas) {
         //reader.readAsText( f );
     });
 
+
+
+var url = window.location.href;
+var params = url.split('?');
+
+$("#selectPath").attr("value", params[1] );
+
+
+
 };
 
 
