@@ -7,6 +7,7 @@ __email__ = 'wougzy@gmail.com'
 # JSON Model format 3.1
 
 # todo:
+# -basic UI
 # -secure skeleton/weights export (maxInf, 2 joints)
 # -secure file writing
 # -export vertex colors
@@ -78,7 +79,7 @@ class Exporter(object):
 
         for node in geo:
             for shp in node.getShapes():
-                if isinstance(shp, pm.nt.Mesh) and shp.io.get()==0:
+                if isinstance(shp, pm.nt.Mesh) and shp.io.get()==0 and shp.isVisible():
                     self.meshes.append(node)
                     self.shapes.append(shp)
 
@@ -109,7 +110,7 @@ class Exporter(object):
         self.db['faces'] = []
         self.db['uvs'] = [[]]
         self.db['normals'] = []
-        #self.db['colors'] = []
+        self.db['colors'] = []
 
         self.db['metadata']['vertices'] = 0
         self.db['metadata']['faces'] = 0
@@ -142,16 +143,39 @@ class Exporter(object):
         mshfn = om.MFnMesh(dag)
 
         # export materials
-        sgs = list(set( shp.outputs(type='shadingEngine') ))
+        sgs = []
         sgf = []
 
-        if len(sgs) > 1:
-            for sg in sgs:
-                ids = []
-                for _f in pm.ls( sg.members(), flatten=1 ):
-                    if isinstance(_f, pm.MeshFace):
-                        ids.append(_f)
-                sgf.append(ids)
+        def faces(x):
+          f = []
+          for fs in x:
+            if fs.startswith('f'):
+              fs = fs.split('[')[1].split(']')[0]
+              if ':' in fs:
+                a, b = fs.split(':')
+                a, b = int(a), int(b)
+                f.extend(range(a, b + 1))
+              else:
+                f.append(int(fs))
+          return f
+
+        _o = shp.instObjGroups[0].objectGroups.outputs(type='shadingEngine')
+        if _o:
+            # multi mat
+            for _id in shp.instObjGroups[0].objectGroups.getArrayIndices():
+                og = shp.instObjGroups[0].objectGroups[_id]
+                f = faces( og.objectGrpCompList.get() )
+
+                _sg = og.outputs()
+                if _sg and f:
+                    sgs.append(_sg[0])
+                    sgf.append(f)
+
+        else:
+            # single mat
+            _o = shp.instObjGroups[0].outputs(type='shadingEngine')
+            sgs += _o
+
 
         pm.progressWindow( edit=True, progress=0, status="Writing Materials...", maxValue=sgs )
 
@@ -185,10 +209,10 @@ class Exporter(object):
 
 
                 _nt = pm.nodeType(mat)
-                if _nt in ('lambert', 'phong', 'blinn'):
+                if _nt in ('lambert', 'phong', 'blinn', 'anisotropic'):
                     m['shading'] = 'Phong'
                     m['colorDiffuse'] = mat.color.get()
-                    #m['colorAmbient'] = mat.ambientColor.get()
+                    m['colorAmbient'] = mat.ambientColor.get()
                     m['colorEmissive'] = mat.incandescence.get()
 
                     self.setTextureInfo(i, 'mapDiffuse', mat.color )
@@ -201,9 +225,16 @@ class Exporter(object):
                         m['transparency'] = _t
                         m['transparent'] = True
 
-                if _nt in ('phong', 'blinn'):
+                if _nt in ('phong', 'blinn', 'anisotropic'):
                     m['colorSpecular'] = mat.specularColor.get()
                     m['specularCoef'] = 10
+                    if _nt == 'blinn':
+                        m['specularCoef'] = 4 / mat.eccentricity.get()
+                    elif _nt == 'phong':
+                        m['specularCoef'] = mat.cosinePower.get() * 2
+                    if _nt == 'anisotropic':
+                        m['specularCoef'] = 4 / mat.roughness.get()
+
 
                     self.setTextureInfo(i, 'mapSpecular', mat.specularColor )
 
@@ -263,6 +294,8 @@ class Exporter(object):
 
         it = om.MItMeshPolygon(dag)
         while not it.isDone():
+            f = it.index()
+
             # vertices
             _vtx = om.MIntArray()
             it.getVertices( _vtx )
@@ -271,6 +304,8 @@ class Exporter(object):
             if len(vtx)>4:
                 self.db['metadata']['faces'] -= 1
                 self.faces[-1] -= 1
+                it.next()
+                continue
             else:
                 dbf = [0]
                 dbf += vtx
@@ -278,6 +313,15 @@ class Exporter(object):
                     dbf[0] += FACE_QUAD
 
             # material
+            dbf[0] += FACE_MATERIAL
+
+            if len(sgs)==1:
+                dbf.append(sgi[0])
+            else:
+                for i,fset in enumerate(sgf):
+                    if f in fset:
+                        dbf.append(sgi[i])
+                        break
 
             # uvs
             _u = om.MFloatArray()
@@ -304,15 +348,18 @@ class Exporter(object):
                         dbuv += uv
                         uvs[v].append((i,uv))
                         dbf.append(i)
-
             except:
-                pass
+                print '# warning: %s.f[%s] has no uv' % (shp, f)
 
 
 
             # colors
             colors = om.MColorArray()
 
+
+            self.db['faces'] += dbf
+
+            it.next()
             pm.progressWindow( edit=True, step=1 )
 
 
@@ -320,50 +367,6 @@ class Exporter(object):
 
         """
         for f in msh.faces:
-            vtx = [x+_voffset for x in f.getVertices()]
-            if len(vtx)>4:
-                self.db['metadata']['faces'] -= 1
-                self.faces[-1] -= 1
-
-            else:
-                dbf = [0]
-                dbf += vtx
-                if len(vtx)==4:
-                    dbf[0] += FACE_QUAD
-
-
-                dbf[0] += FACE_MATERIAL
-
-                if len(sgs)==1:
-                    dbf.append(sgi[0])
-                else:
-                    for i,fset in enumerate(sgf):
-                        if f in fset:
-                            dbf.append(sgi[i])
-                            break
-
-
-                dbf[0] += FACE_VERTEX_UV
-
-                for v,uv in zip( vtx, zip(*f.getUVs()) ):
-                    uv = roundList(uv, DECIMALS_UVS)
-
-                    if not uvs.get(v):
-                        uvs[v] = []
-
-                    done = False
-                    for _i,_uv in uvs[v]:
-                        if _uv == uv:
-                            dbf.append(_i)
-                            done = True
-                            break
-
-                    if not done:
-                        i = len(dbuv)/2
-                        dbuv += uv
-                        uvs[v].append((i,uv))
-                        dbf.append(i)
-
 
                 dbf[0] += FACE_VERTEX_NORMAL
 
@@ -385,10 +388,6 @@ class Exporter(object):
                         dbn += n
                         normals[v].append((i,n))
                         dbf.append(i+_noffset)
-
-                self.db['faces'] += dbf
-
-            pm.progressWindow( edit=True, step=1 )
             """
 
 
@@ -688,7 +687,7 @@ class Exporter(object):
 
 
 
-    def write(self, name, path, compact=False, dump=False):
+    def write(self, name, path, dump=True, compact=False ):
         #todo: check path validity
         #todo: confirm overwrite
 
