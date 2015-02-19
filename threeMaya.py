@@ -1,4 +1,4 @@
-__version__ = '0.3'
+__version__ = '0.4'
 __author__ = 'Thomas Guittonneau'
 __email__ = 'wougzy@gmail.com'
 
@@ -15,9 +15,13 @@ __email__ = 'wougzy@gmail.com'
 # -export bump textures
 
 
+import sys
 import os.path
 import shutil
-import pymel.core as pymel
+import json
+import maya.OpenMaya as om
+import maya.OpenMayaAnim as oma
+import pymel.core as pm
 
 
 FACE_QUAD          = 0b00000001
@@ -54,17 +58,17 @@ class Exporter(object):
 
     def __init__(self, *args):
 
-        nodes = pymel.ls(args, et='transform')
+        nodes = pm.ls(args, et='transform')
         if not nodes:
-            nodes = pymel.selected(et='transform')
+            nodes = pm.selected(et='transform')
 
-        _sl = pymel.selected()
-        pymel.select(nodes, hi=1)
-        nodes = pymel.selected()
-        pymel.select(_sl)
+        _sl = pm.selected()
+        pm.select(nodes, hi=1)
+        nodes = pm.selected()
+        pm.select(_sl)
 
         geo = []
-        for node in pymel.ls(nodes, et='mesh'):
+        for node in pm.ls(nodes, et='mesh'):
             msh = node.getParent()
             if not msh in geo:
                 geo.append(msh)
@@ -74,7 +78,7 @@ class Exporter(object):
 
         for node in geo:
             for shp in node.getShapes():
-                if isinstance(shp, pymel.nt.Mesh) and shp.io.get()==0:
+                if isinstance(shp, pm.nt.Mesh) and shp.io.get()==0:
                     self.meshes.append(node)
                     self.shapes.append(shp)
 
@@ -110,8 +114,15 @@ class Exporter(object):
         self.db['metadata']['vertices'] = 0
         self.db['metadata']['faces'] = 0
 
-        for msh,shp in zip(self.meshes, self.shapes):
-            self.exportGeometry(msh,shp)
+        try:
+            for msh,shp in zip(self.meshes, self.shapes):
+                self.exportGeometry(msh,shp)
+        except:
+            pm.progressWindow( endProgress=True )
+            from traceback import print_tb
+            print sys.exc_info()[0]
+            print_tb(sys.exc_info()[2])
+            return None
 
         self.db['metadata']['materials'] = len( self.db['materials'] )
         self.db['metadata']['uvs'] = len(self.db['uvs'][0])/2
@@ -123,6 +134,13 @@ class Exporter(object):
 
     def exportGeometry(self, msh, shp):
 
+        pm.progressWindow( endProgress=True )
+        pm.progressWindow( title="Exporting File", progress=0, status="" )
+
+        # api calls
+        dag = shp.__apiobject__()
+        mshfn = om.MFnMesh(dag)
+
         # export materials
         sgs = list(set( shp.outputs(type='shadingEngine') ))
         sgf = []
@@ -130,11 +148,12 @@ class Exporter(object):
         if len(sgs) > 1:
             for sg in sgs:
                 ids = []
-                for _f in pymel.ls( sg.members(), flatten=1 ):
-                    if isinstance(_f, pymel.MeshFace):
+                for _f in pm.ls( sg.members(), flatten=1 ):
+                    if isinstance(_f, pm.MeshFace):
                         ids.append(_f)
                 sgf.append(ids)
 
+        pm.progressWindow( edit=True, progress=0, status="Writing Materials...", maxValue=sgs )
 
         sgi = []
 
@@ -165,7 +184,7 @@ class Exporter(object):
                 self.db['materials'].append(m)
 
 
-                _nt = pymel.nodeType(mat)
+                _nt = pm.nodeType(mat)
                 if _nt in ('lambert', 'phong', 'blinn'):
                     m['shading'] = 'Phong'
                     m['colorDiffuse'] = mat.color.get()
@@ -198,26 +217,37 @@ class Exporter(object):
                 elif shp.opposite.get():
                     m['flipSided'] = True
 
+                pm.progressWindow( edit=True, step=1 )
+
             sgi.append( self.materials.index(str(mat)) )
 
 
 
         # export vertices
-        _v = len(msh.vtx)
+        _v = mshfn.numVertices()
         _voffset = self.db['metadata']['vertices']
         self.db['metadata']['vertices'] += _v
         self.vertices.append(_v)
 
-        for v in msh.vtx:
-            self.db['vertices'] += roundList( v.getPosition(space='world'), DECIMALS_VERTICES )
+        pm.progressWindow( edit=True, progress=0, status="Writing vertices...", maxValue=_v )
 
+
+        _pts = om.MPointArray()
+        mshfn.getPoints(_pts, om.MSpace.kWorld)
+
+        for i in xrange(_v):
+            _p = [ _pts[i][0], _pts[i][1], _pts[i][2] ]
+            self.db['vertices'] += roundList( _p, DECIMALS_VERTICES )
+            pm.progressWindow( edit=True, step=1 )
 
 
         # export faces
-        _f = len(msh.faces)
+        _f = mshfn.numPolygons()
         _foffset = self.db['metadata']['faces']
         self.db['metadata']['faces'] += _f
         self.faces.append(_f)
+
+        pm.progressWindow( edit=True, progress=0, status="Writing faces...", maxValue=_f )
 
 
         _noffset = len(self.db['normals'])/3
@@ -231,6 +261,64 @@ class Exporter(object):
         dbn  = []
 
 
+        it = om.MItMeshPolygon(dag)
+        while not it.isDone():
+            # vertices
+            _vtx = om.MIntArray()
+            it.getVertices( _vtx )
+            vtx = [x+_voffset for x in _vtx]
+
+            if len(vtx)>4:
+                self.db['metadata']['faces'] -= 1
+                self.faces[-1] -= 1
+            else:
+                dbf = [0]
+                dbf += vtx
+                if len(vtx)==4:
+                    dbf[0] += FACE_QUAD
+
+            # material
+
+            # uvs
+            _u = om.MFloatArray()
+            _v = om.MFloatArray()
+            try:
+                it.getUVs( _u, _v )
+                dbf[0] += FACE_VERTEX_UV
+
+                for v,uv in zip( vtx, zip(_u,_v) ):
+                    uv = roundList(uv, DECIMALS_UVS)
+
+                    if not uvs.get(v):
+                        uvs[v] = []
+
+                    done = False
+                    for _i,_uv in uvs[v]:
+                        if _uv == uv:
+                            dbf.append(_i)
+                            done = True
+                            break
+
+                    if not done:
+                        i = len(dbuv)/2
+                        dbuv += uv
+                        uvs[v].append((i,uv))
+                        dbf.append(i)
+
+            except:
+                pass
+
+
+
+            # colors
+            colors = om.MColorArray()
+
+            pm.progressWindow( edit=True, step=1 )
+
+
+
+
+        """
         for f in msh.faces:
             vtx = [x+_voffset for x in f.getVertices()]
             if len(vtx)>4:
@@ -300,10 +388,14 @@ class Exporter(object):
 
                 self.db['faces'] += dbf
 
+            pm.progressWindow( edit=True, step=1 )
+            """
+
 
         self.db['uvs'][0].extend(dbuv)
-        self.db['normals'].extend(dbn)
+        #self.db['normals'].extend(dbn)
 
+        pm.progressWindow( endProgress=True )
 
 
 
@@ -390,7 +482,7 @@ class Exporter(object):
                         b['parent'] = self.infs.index(p)
                         break
 
-                _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get() )
+                _m = pm.dt.TransformationMatrix( inf.worldMatrix.get() )
                 if _parent:
                     _m *= _parent.worldInverseMatrix.get()
 
@@ -409,10 +501,10 @@ class Exporter(object):
 
     def exportAnimation(self, _start, _end):
 
-            self.infs = [pymel.PyNode(str(x)) for x in self.infs]
+            self.infs = [pm.PyNode(str(x)) for x in self.infs]
 
             # export simple anim
-            _keys = pymel.keyframe(self.infs, query=True, timeChange=True)
+            _keys = pm.keyframe(self.infs, query=True, timeChange=True)
 
             if _keys:
                 anim = {}
@@ -428,7 +520,7 @@ class Exporter(object):
                     show = 48,
                     palf = 50,
                     ntscf = 60
-                    )[ pymel.currentUnit(query=True, time=True) ]
+                    )[ pm.currentUnit(query=True, time=True) ]
 
                 anim['fps'] = fps
 
@@ -456,7 +548,7 @@ class Exporter(object):
                         _key = {}
                         _key['time'] = round( frame/float(fps), DECIMALS_TIME )
 
-                        _m = pymel.dt.TransformationMatrix( inf.worldMatrix.get(time=_t) )
+                        _m = pm.dt.TransformationMatrix( inf.worldMatrix.get(time=_t) )
                         if _parent:
                             _m *= _parent.worldInverseMatrix.get(time=_t)
 
@@ -486,7 +578,7 @@ class Exporter(object):
             infos['mode'] = mode
 
             src = src[0]
-            _nt = pymel.nodeType(src)
+            _nt = pm.nodeType(src)
 
             if _nt == 'file':
                 infos['file'] = os.path.realpath( src.fileTextureName.get() )
@@ -596,7 +688,7 @@ class Exporter(object):
 
 
 
-    def write(self, name, path, compact=False):
+    def write(self, name, path, compact=False, dump=False):
         #todo: check path validity
         #todo: confirm overwrite
 
@@ -625,7 +717,10 @@ class Exporter(object):
         js = path+'/'+name+'.js'
 
         f = open(js,'w')
-        f.write( self.encode(compact) )
+        if not dump:
+            f.write( self.encode(compact) )
+        else:
+            f.write( json.dumps(self.db) )
         f.close()
 
 
