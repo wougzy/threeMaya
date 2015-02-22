@@ -10,7 +10,6 @@ __email__ = 'wougzy@gmail.com'
 # -basic UI
 # -secure skeleton/weights export (maxInf, 2 joints)
 # -secure file writing
-# -export vertex colors
 # -export blendshapes
 # -better texture handling (bake, 2d placement)
 # -export bump textures
@@ -37,6 +36,7 @@ FACE_VERTEX_COLOR  = 0b10000000
 DECIMALS_VERTICES = 4
 DECIMALS_UVS      = 3
 DECIMALS_NORMALS  = 3
+DECIMALS_COLOR    = 3
 DECIMALS_WEIGHTS  = 2
 DECIMALS_POS      = 3
 DECIMALS_ROT      = 5
@@ -110,10 +110,15 @@ class Exporter(object):
         self.db['faces'] = []
         self.db['uvs'] = [[]]
         self.db['normals'] = []
-        self.db['colors'] = []
+        self.db['colors'] = [16777215] #white for colorless
 
         self.db['metadata']['vertices'] = 0
         self.db['metadata']['faces'] = 0
+
+        self._prg_msh = len(self.shapes)
+        self._prg_count = 0
+        pm.progressWindow( endProgress=True )
+        pm.progressWindow( title="Exporting meshes", progress=0, status="", maxValue=self._prg_msh )
 
         try:
             for msh,shp in zip(self.meshes, self.shapes):
@@ -125,6 +130,9 @@ class Exporter(object):
             print_tb(sys.exc_info()[2])
             return None
 
+        pm.progressWindow( endProgress=True )
+
+
         self.db['metadata']['materials'] = len( self.db['materials'] )
         self.db['metadata']['uvs'] = len(self.db['uvs'][0])/2
         self.db['metadata']['normals'] = len(self.db['normals'])/3
@@ -135,14 +143,13 @@ class Exporter(object):
 
     def exportGeometry(self, msh, shp):
 
-        pm.progressWindow( endProgress=True )
-        pm.progressWindow( title="Exporting File", progress=0, status="" )
-
         # api calls
         dag = shp.__apiobject__()
         mshfn = om.MFnMesh(dag)
 
         # export materials
+        pm.progressWindow( edit=True, status='mesh %s/%s (%s): writing materials...'%(self._prg_count,self._prg_msh,msh) )
+
         sgs = []
         sgf = []
 
@@ -176,15 +183,19 @@ class Exporter(object):
             _o = shp.instObjGroups[0].outputs(type='shadingEngine')
             sgs += _o
 
+        doColors = shp.displayColors.get()
 
-        pm.progressWindow( edit=True, progress=0, status="Writing Materials...", maxValue=sgs )
 
         sgi = []
 
         for sg in sgs:
             mat = sg.surfaceShader.inputs()[0]
             if str(mat) in self.materials:
-                pass
+                if doColors:
+                    for m in self.db['materials']:
+                        if m['name'] == str(mat):
+                            m['vertexColors'] = True
+                            break
             else:
                 i = len(self.materials)
                 self.materials.append(str(mat))
@@ -196,13 +207,6 @@ class Exporter(object):
                     'DbgColor' : 0xFFFFFF,
                     'DbgIndex' : i,
                     'DbgName'  : str(mat),
-
-                    #'blending' : 'NormalBlending',
-                    #'depthTest' : True,
-                    #'depthWrite' : True,
-                    #'visible' : True
-                    #'wireframe': True,
-                    #'vertexColors' : False,
                 }
 
                 self.db['materials'].append(m)
@@ -212,11 +216,12 @@ class Exporter(object):
                 if _nt in ('lambert', 'phong', 'blinn', 'anisotropic'):
                     m['shading'] = 'Phong'
                     m['colorDiffuse'] = mat.color.get()
-                    m['colorAmbient'] = mat.ambientColor.get()
-                    m['colorEmissive'] = mat.incandescence.get()
+                    m['colorAmbient'] = list(pm.dt.Vector(mat.ambientColor.get()) + mat.incandescence.get())
+                    #m['colorEmissive'] = mat.incandescence.get()
+                    m['colorSpecular'] = [0,0,0]
 
                     self.setTextureInfo(i, 'mapDiffuse', mat.color )
-                    #self.setTextureInfo(i, 'mapLight', mat.ambientColor )
+                    self.setTextureInfo(i, 'mapLight', mat.ambientColor )
                     self.setTextureInfo(i, 'mapBump', mat.normalCamera )
 
                     _t = mat.transparency.get()
@@ -248,7 +253,8 @@ class Exporter(object):
                 elif shp.opposite.get():
                     m['flipSided'] = True
 
-                pm.progressWindow( edit=True, step=1 )
+                if doColors:
+                    m['vertexColors'] = True
 
             sgi.append( self.materials.index(str(mat)) )
 
@@ -260,7 +266,7 @@ class Exporter(object):
         self.db['metadata']['vertices'] += _v
         self.vertices.append(_v)
 
-        pm.progressWindow( edit=True, progress=0, status="Writing vertices...", maxValue=_v )
+        pm.progressWindow( edit=True, status='mesh %s/%s (%s): writing vertices...'%(self._prg_count,self._prg_msh,msh) )
 
 
         _pts = om.MPointArray()
@@ -269,7 +275,6 @@ class Exporter(object):
         for i in xrange(_v):
             _p = [ _pts[i][0], _pts[i][1], _pts[i][2] ]
             self.db['vertices'] += roundList( _p, DECIMALS_VERTICES )
-            pm.progressWindow( edit=True, step=1 )
 
 
         # export faces
@@ -278,19 +283,27 @@ class Exporter(object):
         self.db['metadata']['faces'] += _f
         self.faces.append(_f)
 
-        pm.progressWindow( edit=True, progress=0, status="Writing faces...", maxValue=_f )
+        pm.progressWindow( edit=True, status='mesh %s/%s (%s): writing faces...'%(self._prg_count,self._prg_msh,msh) )
 
+
+        _uvoffset = len(self.db['uvs'][0])/2
+        uvs = {}
+        dbuv = []
 
         _noffset = len(self.db['normals'])/3
-        _uvoffset = len(self.db['uvs'][0])/2
+        _ns = om.MFloatVectorArray()
+        mshfn.getNormals(_ns,om.MSpace.kWorld)
+        for i in xrange(_ns.length()):
+            _n = [ _ns[i][0], _ns[i][1], _ns[i][2] ]
+            self.db['normals'] += roundList( _n, DECIMALS_NORMALS )
+        _npf = om.MIntArray()
+        _nid = om.MIntArray()
+        mshfn.getNormalIds(_npf, _nid)
 
-        uvs = {}
-        normals = {}
-        colors = {}
+        _coffset = len(self.db['colors'])
 
-        dbuv = []
-        dbn  = []
 
+        _vfoffset = 0
 
         it = om.MItMeshPolygon(dag)
         while not it.isDone():
@@ -305,6 +318,7 @@ class Exporter(object):
                 self.db['metadata']['faces'] -= 1
                 self.faces[-1] -= 1
                 it.next()
+                _vfoffset += len(vtx)
                 continue
             else:
                 dbf = [0]
@@ -349,52 +363,45 @@ class Exporter(object):
                         uvs[v].append((i,uv))
                         dbf.append(i)
             except:
-                print '# warning: %s.f[%s] has no uv' % (shp, f)
+                pass
+                #print '# warning: %s.f[%s] has no uv' % (shp, f)
 
+            # normals
+            dbf[0] += FACE_VERTEX_NORMAL
 
+            for i in xrange( len(vtx) ):
+                _n = _nid[i+_vfoffset]
+                dbf.append(_n+_noffset)
 
             # colors
-            colors = om.MColorArray()
+            if doColors:
+                dbf[0] += FACE_VERTEX_COLOR
+
+                for i in xrange( len(vtx) ):
+                    if it.hasColor( i ):
+                        color = om.MColor()
+                        it.getColor( color, i )
+                        c = (int(color[0]*255)<<16) + (int(color[1]*255)<<8) + int(color[2]*255)
+                        self.db['colors'].append(c)
+                        dbf.append(i+_vfoffset+_coffset)
+                    else:
+                        # white for colorless vertex
+                        dbf.append(0)
+                        _coffset -= 1
 
 
+
+            _vfoffset += len(vtx)
+
+            # add face
             self.db['faces'] += dbf
-
             it.next()
-            pm.progressWindow( edit=True, step=1 )
-
-
-
-
-        """
-        for f in msh.faces:
-
-                dbf[0] += FACE_VERTEX_NORMAL
-
-                for v,n in zip( vtx, f.getNormals() ):
-                    n = roundList(n, DECIMALS_NORMALS)
-
-                    if not normals.get(v):
-                        normals[v] = []
-
-                    done = False
-                    for _i,_n in normals[v]:
-                        if _n == n:
-                            dbf.append(_i+_noffset)
-                            done = True
-                            break
-
-                    if not done:
-                        i = len(dbn)/3
-                        dbn += n
-                        normals[v].append((i,n))
-                        dbf.append(i+_noffset)
-            """
 
 
         self.db['uvs'][0].extend(dbuv)
-        #self.db['normals'].extend(dbn)
 
-        pm.progressWindow( endProgress=True )
+        self._prg_count += 1
+        pm.progressWindow( edit=True, step=1 )
 
 
 

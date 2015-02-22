@@ -4,14 +4,13 @@ threeMaya is a simple Maya scene exporter for the three.js library.
 
 currently supported:
 * mesh (no n-gons yet)
-* uvs
+* normals, uvs, vertex colors
 * lambert, blinn, phong shaders
 * skinCluster skeleton
 * skinCluster weights (reduced at 2 joints per vertex)
 * skeleton animation (plot)
 
 upcoming:
-* vertex colors
 * morph targets
 
 
@@ -27,5 +26,5 @@ simply copy threeMaya.py into the folder of your choice from your PYTHONPATH
 import threeMaya
 
 e = threeMaya.Exporter('pCube1')
-e.write('cube', 'c:/work/three/viewer/models', compact=False)
+e.write('cube', 'c:/work/three/viewer/models')
 ```
