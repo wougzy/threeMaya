@@ -20,7 +20,6 @@ import os.path
 import shutil
 import json
 import maya.OpenMaya as om
-import maya.OpenMayaAnim as oma
 import pymel.core as pm
 
 
@@ -215,8 +214,9 @@ class Exporter(object):
                 _nt = pm.nodeType(mat)
                 if _nt in ('lambert', 'phong', 'blinn', 'anisotropic'):
                     m['shading'] = 'Phong'
-                    m['colorDiffuse'] = mat.color.get()
-                    m['colorAmbient'] = list(pm.dt.Vector(mat.ambientColor.get()) + mat.incandescence.get())
+                    m['colorDiffuse'] = roundList( mat.color.get(), DECIMALS_COLOR )
+                    _c = pm.dt.Vector(mat.ambientColor.get()) + mat.incandescence.get()
+                    m['colorAmbient'] = roundList( _c, DECIMALS_COLOR )
                     #m['colorEmissive'] = mat.incandescence.get()
                     m['colorSpecular'] = [0,0,0]
 
@@ -231,7 +231,7 @@ class Exporter(object):
                         m['transparent'] = True
 
                 if _nt in ('phong', 'blinn', 'anisotropic'):
-                    m['colorSpecular'] = mat.specularColor.get()
+                    m['colorSpecular'] = roundList( mat.specularColor.get(), DECIMALS_COLOR )
                     m['specularCoef'] = 10
                     if _nt == 'blinn':
                         m['specularCoef'] = 4 / mat.eccentricity.get()
@@ -245,7 +245,7 @@ class Exporter(object):
 
                 if _nt == 'surfaceShader':
                     m['shading'] = 'Basic'
-                    m['colorDiffuse'] = mat.outColor.get()
+                    m['colorDiffuse'] = roundList( mat.outColor.get(), DECIMALS_COLOR )
 
 
                 if shp.doubleSided.get():
@@ -279,22 +279,19 @@ class Exporter(object):
 
         # export faces
         _f = mshfn.numPolygons()
-        _foffset = self.db['metadata']['faces']
         self.db['metadata']['faces'] += _f
         self.faces.append(_f)
 
         pm.progressWindow( edit=True, status='mesh %s/%s (%s): writing faces...'%(self._prg_count,self._prg_msh,msh) )
 
 
-        _uvoffset = len(self.db['uvs'][0])/2
         uvs = {}
-        dbuv = []
 
         _noffset = len(self.db['normals'])/3
-        _ns = om.MFloatVectorArray()
-        mshfn.getNormals(_ns,om.MSpace.kWorld)
-        for i in xrange(_ns.length()):
-            _n = [ _ns[i][0], _ns[i][1], _ns[i][2] ]
+        _normals = om.MFloatVectorArray()
+        mshfn.getNormals(_normals,om.MSpace.kWorld)
+        for i in xrange(_normals.length()):
+            _n = [ _normals[i][0], _normals[i][1], _normals[i][2] ]
             self.db['normals'] += roundList( _n, DECIMALS_NORMALS )
         _npf = om.MIntArray()
         _nid = om.MIntArray()
@@ -350,16 +347,16 @@ class Exporter(object):
                     if not uvs.get(v):
                         uvs[v] = []
 
-                    done = False
+                    exported = False
                     for _i,_uv in uvs[v]:
                         if _uv == uv:
                             dbf.append(_i)
-                            done = True
+                            exported = True
                             break
 
-                    if not done:
-                        i = len(dbuv)/2
-                        dbuv += uv
+                    if not exported:
+                        i = len(self.db['uvs'][0])/2
+                        self.db['uvs'][0] += uv
                         uvs[v].append((i,uv))
                         dbf.append(i)
             except:
@@ -390,15 +387,12 @@ class Exporter(object):
                         _coffset -= 1
 
 
-
             _vfoffset += len(vtx)
 
             # add face
             self.db['faces'] += dbf
             it.next()
 
-
-        self.db['uvs'][0].extend(dbuv)
 
         self._prg_count += 1
         pm.progressWindow( edit=True, step=1 )
@@ -448,7 +442,6 @@ class Exporter(object):
                     for wmap in skin.getWeights(msh):
                         weights.append(wmap)
 
-                    nweights=[]
                     for w in weights:
                         if len(infid)>1:
                             w = zip(infid,w)
